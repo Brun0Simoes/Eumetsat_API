@@ -1,302 +1,574 @@
-# API Usage and Development Walkthrough
+# EUMETSAT API Implementation Walkthrough
 
-## Purpose
+## Scope
 
-This document explains two things in a practical way:
+This document is not a user guide for the calendar page itself.
 
-1. how to use the EUMETSAT-backed API exposed by this repository;
-2. how this standalone application was developed, from upstream feed to dashboard.
+Its purpose is to explain, step by step, how this repository was configured to consume the public EUMETSAT training API, transform the upstream XML feed into a normalized dataset, render that dataset in a calendar, and export the same filtered slice as `.ics`.
 
-The intended audience is international scientific, technical, and engineering teams that want a reusable calendar integration rather than a one-off demo.
+The intended audience is technical teams, scientific institutions, and developers who want to understand or reproduce the integration end to end.
 
-## What this repository provides
-
-This repository does **not** scrape the EUMETSAT dashboard HTML.
-
-Instead, it:
-
-- reads the public EUMETSAT training events endpoint;
-- parses and normalizes the upstream XML on the server;
-- exposes a local JSON API for the front-end;
-- renders a month calendar and day detail view;
-- exports the currently filtered month to `.ics`.
-
-In practice, the repository acts as a clean adapter between the upstream EUMETSAT feed and a calendar UI that can be embedded into another scientific portal.
-
-## Upstream data source
-
-Primary upstream source:
+## Primary upstream references
 
 - [EUMETSAT public training events endpoint](https://trainingevents.eumetsat.int/trapi/resources/public/events)
-
-Supporting references:
-
 - [EUMETSAT dashboard](https://user.eumetsat.int/dashboard)
 - [EUMETSAT guide: Getting started using data](https://user.eumetsat.int/resources/user-guides/getting-started-using-data)
 
-## Step 1: run the project locally
+## High-level pipeline
 
-From the repository root:
+The application is built as a pipeline with four distinct stages:
 
-```bash
-npm install
-npm run dev
+1. collect XML from the public EUMETSAT endpoint;
+2. normalize XML into a stable TypeScript-friendly event contract;
+3. serve the normalized dataset through local route handlers;
+4. render the dataset in a month calendar and export the same slice as `.ics`.
+
+```mermaid
+flowchart LR
+    A["EUMETSAT public XML endpoint"] --> B["Server fetch with timeout"]
+    B --> C["XML cleanup and field extraction"]
+    C --> D["Normalized event array"]
+    D --> E["In-memory cache snapshot"]
+    E --> F["GET /api/eumetsat-calendar/events"]
+    E --> G["GET /api/eumetsat-calendar/export"]
+    F --> H["Calendar UI"]
+    G --> I[".ics file"]
 ```
 
-Then open:
+## File map
 
-- [http://localhost:3010/eumetsat-calendar](http://localhost:3010/eumetsat-calendar)
+These are the files that implement the integration:
 
-There are no environment variables required for the default example.
+- `lib/eumetsat-feed.ts`
+  Collects and normalizes data from the EUMETSAT API.
 
-## Step 2: understand the route structure
+- `lib/calendar-types.ts`
+  Defines the normalized event model used across the app.
 
-This project exposes three relevant routes:
+- `lib/calendar-utils.ts`
+  Implements UTC-safe date helpers, filtering, and `.ics` generation.
 
-- `/eumetsat-calendar`
-- `/api/eumetsat-calendar/events`
-- `/api/eumetsat-calendar/export`
+- `app/api/eumetsat-calendar/events/route.ts`
+  Exposes the cached normalized dataset as JSON.
 
-### `/eumetsat-calendar`
+- `app/api/eumetsat-calendar/export/route.ts`
+  Exposes the `.ics` export based on the same filtered event slice.
 
-This is the functional dashboard page. It:
+- `app/eumetsat-calendar/page.tsx`
+  Server entry point that renders the page shell and triggers warmup.
 
-- renders immediately;
-- triggers cache warmup in parallel;
-- loads fresh data through the local JSON API;
-- keeps updating itself without blocking the rest of the page.
+- `components/eumetsat-calendar-panel.tsx`
+  Client-side calendar that fetches the local JSON route and renders the month view.
 
-### `/api/eumetsat-calendar/events`
+## Step 1: define the upstream source
 
-This is the normalized JSON feed consumed by the front-end.
+The integration starts in `lib/eumetsat-feed.ts`:
 
-Use it when:
-
-- you want to inspect the normalized dataset;
-- you want to integrate the same data into another UI;
-- you want to validate whether upstream refresh is working.
-
-Example request:
-
-```bash
-curl http://localhost:3010/api/eumetsat-calendar/events
+```ts
+const GUIDE_EUMETSAT_EVENTS_ENDPOINT =
+  "https://trainingevents.eumetsat.int/trapi/resources/public/events";
 ```
 
-Example response shape:
+This repository intentionally uses the public feed instead of scraping the dashboard HTML. The dashboard is a presentation layer; the XML endpoint is the data source.
+
+That choice gives three benefits:
+
+- more stable integration points;
+- easier testing and debugging;
+- a clean separation between upstream data and local UI.
+
+## Step 2: configure server-side fetch behavior
+
+The upstream XML is fetched in `fetchGuidePublicTrainingEvents()` inside [lib/eumetsat-feed.ts](../lib/eumetsat-feed.ts).
+
+Key configuration:
+
+```ts
+const GUIDE_CALENDAR_CACHE_TTL_MS = 2 * 60 * 1000;
+const GUIDE_EUMETSAT_TIMEOUT_MS = 20 * 1000;
+```
+
+```ts
+const response = await fetch(GUIDE_EUMETSAT_EVENTS_ENDPOINT, {
+  headers: {
+    Accept: "application/xml,text/xml;q=0.9,*/*;q=0.8",
+  },
+  cache: "no-store",
+  signal: controller.signal,
+});
+```
+
+What each part does:
+
+- `Accept: application/xml,text/xml...`
+  Tells the upstream service that XML is the preferred response format.
+
+- `cache: "no-store"`
+  Ensures the process does not rely on stale HTTP-level caching for the remote feed.
+
+- `AbortController` + `GUIDE_EUMETSAT_TIMEOUT_MS`
+  Prevents the server from waiting indefinitely if the upstream endpoint is slow or degraded.
+
+This is a crucial design point: the integration is defensive at the data collection layer, not only in the UI.
+
+## Step 3: clean XML safely before mapping fields
+
+The feed is raw XML, so the implementation first cleans text fragments before building the normalized event model.
+
+Relevant helper functions in [lib/eumetsat-feed.ts](../lib/eumetsat-feed.ts):
+
+- `decodeGuideXmlEntities()`
+- `cleanGuideXmlText()`
+- `matchGuideAllTagValues()`
+- `matchGuideLastTagValue()`
+- `matchGuideNestedValue()`
+- `extractGuideFirstUrl()`
+
+### Why these helpers exist
+
+The public feed is not delivered as a ready-to-render JSON structure. Some fields:
+
+- contain XML entities such as `&amp;`;
+- may embed HTML-like markup;
+- may contain multiple repeated tags;
+- may place useful values inside nested blocks;
+- may include URLs inside free text instead of dedicated URL fields.
+
+The helper layer resolves those problems before event normalization begins.
+
+### Important implementation detail
+
+The code intentionally takes the **last** matching tag value for repeated fields in:
+
+```ts
+function matchGuideLastTagValue(block: string, tagName: string)
+```
+
+That is relevant because some XML structures can repeat tags or contain nested values that should not be treated as the final display field.
+
+## Step 4: extract raw event blocks from the XML feed
+
+After downloading the XML payload, the implementation isolates each event block:
+
+```ts
+Array.from(xml.matchAll(/<event>([\s\S]*?)<\/event>/g))
+```
+
+Each matched block is then passed to:
+
+```ts
+parseGuideEumetsatEventBlock(match[1])
+```
+
+This is the point where the application moves from "generic XML text" to "candidate training event records".
+
+## Step 5: map the upstream XML into a raw event object
+
+The raw XML-to-object mapping happens in:
+
+```ts
+function parseGuideEumetsatEventBlock(block: string): GuideExternalTrainingEvent | null
+```
+
+This function reads the upstream feed and extracts fields such as:
+
+- `title`
+- `startDate`
+- `endDate`
+- `format`
+- `eventType`
+- `status`
+- `attendance`
+- `city`
+- `host`
+- `contactUrl`
+- `registrationHowto`
+- `description`
+- `languages`
+
+The function deliberately returns `null` if the core fields are missing:
+
+- `title`
+- `startDate`
+- `endDate`
+
+That means the pipeline rejects structurally incomplete events early, before they contaminate the downstream dataset.
+
+## Step 6: normalize event semantics for the application
+
+After parsing the raw event object, the code transforms it into the application contract in:
+
+```ts
+async function loadGuideCalendarEventsFresh()
+```
+
+The final shape is defined in [lib/calendar-types.ts](../lib/calendar-types.ts):
+
+```ts
+export type GuideCalendarEvent = {
+  id: string;
+  title: string;
+  startDate: string;
+  endDate: string;
+  format: "ONLINE" | "ONSITE";
+  eventType: string;
+  status: string | null;
+  attendance: string | null;
+  city: string | null;
+  host: string | null;
+  url: string | null;
+  description: string | null;
+  languages: string[];
+  sourceName: string;
+};
+```
+
+### Important normalization rules
+
+1. `rawFormat` is collapsed to `ONLINE` or `ONSITE`.
+2. `registrationHowto` is scanned for the first usable URL.
+3. If no registration URL is found, `contactUrl` becomes the fallback.
+4. `sourceName` is hard-set to `EUMETSAT`.
+5. The event `id` is stabilized from title and start date.
+
+This is where the repository becomes more than a thin proxy. It is an adapter that converts a feed-oriented XML structure into a UI-oriented event model.
+
+## Step 7: deduplicate the upstream dataset
+
+The deduplication rule is applied immediately after parsing:
+
+```ts
+.filter(
+  (event, index, events) =>
+    events.findIndex(
+      (candidate) => candidate.title === event.title && candidate.startDate === event.startDate,
+    ) === index,
+)
+```
+
+This means the current implementation treats `title + startDate` as the uniqueness key.
+
+That is a pragmatic rule:
+
+- simple enough to keep the code readable;
+- stable enough for calendar rendering;
+- effective against repeated upstream records.
+
+If the upstream provider later guarantees a stronger unique identifier, this is the place to change it.
+
+## Step 8: keep the normalized dataset in process memory
+
+The in-memory cache lives in [lib/eumetsat-feed.ts](../lib/eumetsat-feed.ts):
+
+```ts
+type GuideCalendarCacheState = {
+  events: GuideCalendarEvent[] | null;
+  updatedAt: number;
+  refreshPromise: Promise<GuideCalendarEvent[]> | null;
+  lastErrorAt: number | null;
+};
+```
+
+The cache is attached to `globalThis`:
+
+```ts
+const globalForGuideCalendar = globalThis as typeof globalThis & {
+  __eumetsatGuideCalendarCache?: GuideCalendarCacheState;
+};
+```
+
+### Why this was implemented
+
+Without this cache, every UI request would:
+
+- fetch the full XML again;
+- parse the XML again;
+- normalize the dataset again.
+
+That would make navigation slower and would increase load on the upstream service unnecessarily.
+
+### Refresh control
+
+The refresh logic is handled by:
+
+- `getGuideCalendarSnapshot()`
+- `ensureGuideCalendarRefresh(force?)`
+- `getGuideCalendarEvents()`
+
+Key behavior:
+
+- if the cache is fresh, reuse it;
+- if the cache is stale, refresh it;
+- if a refresh is already running, reuse the same promise;
+- if the upstream refresh fails but cached data exists, keep serving the last valid snapshot.
+
+This is the core resilience mechanism of the integration.
+
+## Step 9: expose the normalized dataset as a local JSON API
+
+The route [app/api/eumetsat-calendar/events/route.ts](../app/api/eumetsat-calendar/events/route.ts) exposes the local API consumed by the browser.
+
+Response shape:
 
 ```json
 {
-  "events": [
-    {
-      "id": "guide-external-Example Event-2026-04-01T09:00:00Z",
-      "title": "Example Event",
-      "startDate": "2026-04-01T09:00:00Z",
-      "endDate": "2026-04-01T11:00:00Z",
-      "format": "ONLINE",
-      "eventType": "Webinar",
-      "status": "Scheduled",
-      "attendance": "Open",
-      "city": null,
-      "host": "EUMETSAT",
-      "url": "https://example.org/register",
-      "description": "Event description",
-      "languages": ["English"],
-      "sourceName": "EUMETSAT"
-    }
-  ],
-  "updatedAt": "2026-04-05T18:40:00.000Z",
-  "loading": false,
+  "events": [],
+  "updatedAt": null,
+  "loading": true,
   "lastErrorAt": null
 }
 ```
 
-Field meaning:
+### Why the route returns a snapshot first
 
-- `events`: normalized array returned from the upstream XML feed
-- `updatedAt`: last successful cache refresh time in UTC
-- `loading`: `true` while the local cache is still warming up or refreshing without data
-- `lastErrorAt`: last upstream refresh failure time, if any
+The route does this:
 
-### `/api/eumetsat-calendar/export`
-
-This route exports the currently selected month to `.ics`.
-
-Supported query parameters:
-
-- `month=YYYY-MM`
-- `format=ALL|ONLINE|ONSITE`
-
-Example request:
-
-```bash
-curl "http://localhost:3010/api/eumetsat-calendar/export?month=2026-04&format=ONLINE" -o april-online.ics
+```ts
+const snapshot = getGuideCalendarSnapshot();
+void ensureGuideCalendarRefresh(!snapshot.hasData).catch(() => undefined);
 ```
 
-Example browser URL:
+This means:
 
-- [http://localhost:3010/api/eumetsat-calendar/export?month=2026-04&format=ALL](http://localhost:3010/api/eumetsat-calendar/export?month=2026-04&format=ALL)
+- return the latest known state immediately;
+- start refresh in the background;
+- do not block the HTTP response waiting for the upstream feed.
 
-Use this route when:
+That decision keeps the application responsive even when the upstream XML endpoint is slow.
 
-- you want to import the filtered month into another calendar client;
-- you need the same filtered slice visible in the dashboard;
-- you want a portable file for workflows outside the web UI.
+## Step 10: warm the cache from the page entry point
 
-## Step 3: understand the data flow
+The server page [app/eumetsat-calendar/page.tsx](../app/eumetsat-calendar/page.tsx) also triggers warmup:
 
-The application follows this pipeline:
+```ts
+void ensureGuideCalendarRefresh().catch(() => undefined);
+```
 
-1. fetch upstream XML from the EUMETSAT public endpoint;
-2. extract `<event>` blocks;
-3. normalize each event into a typed JSON structure;
-4. deduplicate events using `title + startDate`;
-5. store the normalized result in in-memory cache;
-6. expose the cached result through the local JSON route;
-7. let the client UI poll the local route rather than the remote XML endpoint directly.
+It does **not** await the result before rendering the shell.
 
-This separation is important because it keeps the front-end stable even if the upstream XML is noisy, slow, or changes in minor ways.
+That means the page can render immediately, while data collection begins in parallel.
 
-## Step 4: understand the normalization rules
+This is why the integration feels responsive even on cold start.
 
-The local API intentionally simplifies the upstream feed.
+## Step 11: load the local API from the client calendar
 
-Key rules:
+The client calendar lives in [components/eumetsat-calendar-panel.tsx](../components/eumetsat-calendar-panel.tsx).
 
-- raw XML is converted to a typed JSON contract;
-- `ONLINE` stays `ONLINE`;
-- non-online event formats are grouped as `ONSITE`;
-- `registrationHowto` is scanned for the first usable URL;
-- if `registrationHowto` does not contain a URL, `contactUrl` is used as fallback;
-- all date math is kept in UTC;
-- duplicated events are removed.
+The client never talks directly to the EUMETSAT XML endpoint. It only talks to:
 
-This makes the UI logic much simpler and more reproducible.
+- `/api/eumetsat-calendar/events`
 
-## Step 5: understand why UTC is used everywhere
+That request is made here:
 
-This is a scientific and operational design choice, not just a coding preference.
+```ts
+const response = await fetch("/api/eumetsat-calendar/events", {
+  cache: "no-store",
+  signal: controller.signal,
+});
+```
 
-If the same event is grouped using local browser time, users in different countries may see it on different days. That is undesirable for a shared institutional calendar.
+This separation is one of the most important implementation choices in the repository:
 
-To avoid that, this repository uses UTC for:
+- upstream XML stays a server concern;
+- front-end state uses normalized local JSON only.
 
-- month keys;
-- day keys;
-- month grid generation;
-- `.ics` export timestamps.
+## Step 12: keep the calendar automatically updated
 
-If your organization wants local-time display, the safest pattern is:
+The client refresh strategy is implemented in the same component.
 
-1. keep the data layer in UTC;
-2. convert only in the presentation layer;
-3. avoid local time for grouping and filtering the base dataset.
+Constants:
 
-## Step 6: understand the refresh strategy
+```ts
+const GUIDE_WARMUP_INTERVAL_MS = 5 * 1000;
+const GUIDE_REFRESH_INTERVAL_MS = 60 * 1000;
+```
 
-The project is designed to stay updated without making the dashboard feel slow.
+Behavior:
 
-Server behavior:
+- when there is no data yet, retry every 5 seconds;
+- once data exists, refresh every 60 seconds;
+- refresh again when the browser tab regains focus;
+- refresh again when the document becomes visible.
 
-- keeps an in-memory cache snapshot;
-- returns the latest cached snapshot immediately;
-- refreshes upstream XML in the background.
+This avoids two failure modes:
 
-Client behavior:
+- stale dashboards that never refresh;
+- aggressive polling that harms navigation or wastes network resources.
 
-- requests the local JSON route on mount;
-- polls every `5 seconds` while the cache is still empty;
-- switches to every `60 seconds` after data is loaded;
-- refreshes when the tab regains focus;
-- refreshes when the page becomes visible again.
+## Step 13: convert events into calendar days
 
-This keeps the interface fresh without forcing users to wait on every navigation.
+The month view does not render directly from raw timestamps. It first derives UTC-safe day keys and a month grid using [lib/calendar-utils.ts](../lib/calendar-utils.ts).
 
-## Step 7: understand the repository structure
+Key helpers:
 
-Main files and their roles:
+- `getGuideMonthKey()`
+- `toGuideDayKey()`
+- `startOfGuideUtcMonth()`
+- `addGuideUtcDays()`
+- `createGuideMonthGrid()`
+- `filterGuideCalendarEvents()`
+- `getGuideDefaultSelectedDay()`
 
-- `app/eumetsat-calendar/page.tsx`
-  Server entry for the calendar page. It renders immediately and triggers background warmup.
+### Why UTC is enforced here
 
-- `app/api/eumetsat-calendar/events/route.ts`
-  Local JSON endpoint consumed by the browser.
+If month grouping were done in local browser time:
 
-- `app/api/eumetsat-calendar/export/route.ts`
-  `.ics` export endpoint with explicit query validation.
+- the same event could fall on different days for different users;
+- the calendar grid could become inconsistent across countries;
+- `.ics` export and UI could diverge.
 
-- `components/eumetsat-calendar-panel.tsx`
-  Interactive calendar UI, month navigation, filters, and day event listing.
+So the integration uses UTC for:
 
-- `lib/eumetsat-feed.ts`
-  Upstream fetch, timeout handling, XML cleanup, normalization, deduplication, and cache management.
+- month grouping;
+- day grouping;
+- calendar grid generation;
+- export timestamps.
 
-- `lib/calendar-utils.ts`
-  UTC-safe date helpers, month grid creation, filter logic, and `.ics` construction.
+## Step 14: render the selected day and visible month
 
-- `lib/calendar-types.ts`
-  Shared TypeScript types for events and filters.
+Inside [components/eumetsat-calendar-panel.tsx](../components/eumetsat-calendar-panel.tsx), the normalized events are grouped by day:
 
-## Step 8: how the application was developed
+```ts
+const eventsByDay = useMemo(() => {
+  const grouped = new Map<string, GuideCalendarEvent[]>();
+  ...
+}, [filteredEvents]);
+```
 
-The application was built in this order:
+Then the UI renders:
 
-1. identify the stable public EUMETSAT endpoint instead of scraping the dashboard;
-2. inspect the XML structure and isolate the fields needed for the calendar;
-3. define a typed normalized event model;
-4. implement server-side fetch and XML parsing;
-5. add deduplication and URL extraction rules;
-6. add an in-memory cache to avoid reparsing XML on every request;
-7. expose a local JSON route for front-end consumption;
-8. build the standalone calendar page and day detail view;
-9. add `.ics` export using the same filtered event slice;
-10. add screenshots and technical documentation for reuse by other teams.
+- the visible month grid;
+- counters per day;
+- event dots per day;
+- the selected day panel;
+- month navigation;
+- format filters;
+- export action.
 
-That order matters. The UI was built on top of a stable local contract, not directly on the external XML feed.
+At this point the original XML is already out of the picture. The UI is working only with normalized application data.
 
-## Step 9: how to adapt it to your own institution
+## Step 15: export the same filtered slice as `.ics`
 
-If you want to reuse this implementation in another portal:
+The export route is [app/api/eumetsat-calendar/export/route.ts](../app/api/eumetsat-calendar/export/route.ts).
 
-1. keep the upstream fetch adapter isolated in `lib/eumetsat-feed.ts`;
-2. preserve the normalized event contract unless you have a strong reason to change it;
-3. adjust only the styling layer if you need another look and feel;
-4. keep UTC for grouping, filtering, and export;
-5. replace in-memory cache with Redis if you need multi-instance deployment;
-6. protect the routes only if your host application requires authentication.
+It validates query parameters with `zod`:
 
-## Step 10: how to verify that the integration is healthy
+```ts
+const guideExportQuerySchema = z.object({
+  month: z.string().regex(/^\\d{4}-\\d{2}$/).optional(),
+  format: z.enum(["ALL", "ONLINE", "ONSITE"]).optional(),
+});
+```
 
-Use this checklist:
+Then it:
 
-1. `npm run dev` starts without errors.
-2. `/eumetsat-calendar` renders without blocking.
-3. `/api/eumetsat-calendar/events` returns JSON with `events`.
-4. `updatedAt` changes after a successful refresh cycle.
-5. month navigation changes the event count.
-6. format filters change the visible subset.
-7. `/api/eumetsat-calendar/export?...` downloads a valid `.ics` file.
-8. the page still works when the upstream feed is temporarily unavailable and cached data exists.
+1. fetches the normalized dataset from cache through `getGuideCalendarEvents()`;
+2. filters that dataset with `filterGuideCalendarEvents()`;
+3. converts the filtered array into `.ics` text with `buildGuideCalendarIcs()`;
+4. returns a downloadable calendar file.
 
-## Typical extension points
+This is important: export does **not** rebuild a different dataset. It reuses the same normalized event pipeline as the visual calendar.
 
-Common places where teams extend this repository:
+## Step 16: build the `.ics` file line by line
 
-- custom styling and branding;
-- additional filters such as language or event type;
-- institutional authentication around the UI;
-- persistent distributed cache;
-- observability and metrics for refresh success or upstream downtime;
-- alternate export formats in addition to `.ics`.
+The `.ics` creation happens in [lib/calendar-utils.ts](../lib/calendar-utils.ts):
 
-## Final recommendation
+- `escapeGuideIcsText()`
+- `formatGuideIcsDate()`
+- `foldGuideIcsLine()`
+- `resolveGuideEventUrl()`
+- `buildGuideCalendarIcs()`
 
-Treat the upstream EUMETSAT XML as a source feed, not as a front-end API contract.
+### Why it was implemented manually
 
-The strength of this repository is the adapter layer:
+The repository generates `.ics` directly instead of relying on a third-party calendar library because:
 
-- upstream XML in;
-- normalized JSON out;
-- reproducible UTC-safe calendar behavior;
-- exportable monthly snapshots.
+- the required subset of the format is limited;
+- the code path stays transparent for scientific and institutional review;
+- the export remains tightly coupled to the same filter logic as the UI;
+- there is no hidden serialization behavior from another dependency.
 
-That separation is what makes the implementation reusable, maintainable, and suitable for institutional scientific environments.
+### Fields written into the export
+
+For each event, the code emits:
+
+- `UID`
+- `DTSTAMP`
+- `DTSTART`
+- `DTEND`
+- `SUMMARY`
+- `DESCRIPTION`
+- `LOCATION`
+- `CATEGORIES`
+- `ORGANIZER`
+- `URL`
+- `STATUS`
+
+All values are escaped and timestamped in UTC.
+
+## Step 17: full end-to-end lifecycle of a single event
+
+This is the complete path followed by one event:
+
+1. EUMETSAT publishes an event in the public XML feed.
+2. `fetchGuidePublicTrainingEvents()` downloads the XML.
+3. Regex extraction isolates the event block.
+4. `parseGuideEumetsatEventBlock()` extracts relevant fields.
+5. `loadGuideCalendarEventsFresh()` normalizes the event into `GuideCalendarEvent`.
+6. The event is stored in the in-memory cache snapshot.
+7. `/api/eumetsat-calendar/events` exposes the cached normalized event as JSON.
+8. `EumetsatCalendarPanel` fetches the local JSON route.
+9. The event is grouped into its UTC day and month.
+10. The event appears in the calendar grid and selected-day panel.
+11. If the current month and format match, `/api/eumetsat-calendar/export` includes it in the `.ics` file.
+
+That is the exact integration chain from data collection to visible calendar item and exportable calendar record.
+
+## Step 18: what can be reconfigured safely
+
+These points can be changed without redesigning the whole pipeline:
+
+- `GUIDE_EUMETSAT_TIMEOUT_MS`
+- `GUIDE_CALENDAR_CACHE_TTL_MS`
+- warmup and refresh intervals in the client
+- calendar styling
+- locale formatting for labels
+- filter set
+- `.ics` metadata fields
+
+These points should be changed more carefully:
+
+- the upstream XML extraction logic;
+- the uniqueness rule used for deduplication;
+- UTC-based grouping;
+- the normalized event contract.
+
+## Step 19: validation checklist for the integration
+
+If you need to verify that the implementation is behaving correctly, use this order:
+
+1. call the upstream XML endpoint directly and verify it responds;
+2. run the local application;
+3. open `/api/eumetsat-calendar/events` and confirm JSON output;
+4. confirm `updatedAt` is populated after a successful refresh;
+5. confirm the calendar page shows event counts for the current month;
+6. switch filters and verify the visible subset changes;
+7. download `/api/eumetsat-calendar/export?month=YYYY-MM&format=ALL`;
+8. import the `.ics` file into a calendar client and confirm the same events appear.
+
+## Final design principle
+
+The core idea behind this repository is simple:
+
+- do not let the UI depend directly on external XML;
+- do not let export depend on a different dataset than the one shown on screen;
+- do not let local time zones silently change the scientific meaning of event dates.
+
+That is why the implementation is structured around:
+
+- server-side XML collection;
+- explicit normalization;
+- UTC-safe grouping;
+- snapshot caching;
+- shared filter logic;
+- deterministic `.ics` export.
