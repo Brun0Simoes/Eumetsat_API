@@ -4,6 +4,8 @@ Standalone `Next.js` reference implementation for the public EUMETSAT training e
 
 This package is designed to be copied into another project or published as its own repository. The rendered page contains only the functional calendar interface. The implementation details are documented in code comments and in [docs/TECHNICAL_GUIDE.md](./docs/TECHNICAL_GUIDE.md).
 
+If you want a practical, step-by-step walkthrough for using the API and understanding how the application was built, start with [docs/API_USAGE_AND_DEVELOPMENT_WALKTHROUGH.md](./docs/API_USAGE_AND_DEVELOPMENT_WALKTHROUGH.md).
+
 The target audience is international scientific and technical teams that need to:
 
 - consume the public EUMETSAT training feed without relying on UI scraping;
@@ -23,6 +25,7 @@ The target audience is international scientific and technical teams that need to
 - `lib/eumetsat-feed.ts`: XML fetch, normalization, deduplication, timeout handling, and in-memory cache.
 - `screenshots/`: captured UI states for review and onboarding.
 - `docs/TECHNICAL_GUIDE.md`: end-to-end technical guide.
+- `docs/API_USAGE_AND_DEVELOPMENT_WALKTHROUGH.md`: operational walkthrough for using the API and understanding the implementation.
 
 ## Run as a standalone app
 
