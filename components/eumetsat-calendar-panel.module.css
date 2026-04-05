@@ -1,0 +1,400 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  padding: 1.5rem;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 2rem;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 28px 90px -56px rgba(15, 23, 42, 0.48);
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.headerText {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.eyebrow,
+.updatedAt,
+.monthCount,
+.selectedLabel {
+  margin: 0;
+  font-size: 0.72rem;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: #6b7280;
+}
+
+.title {
+  margin: 0;
+  font-size: clamp(2rem, 4vw, 3rem);
+  line-height: 0.96;
+  color: #0f172a;
+}
+
+.exportLink,
+.eventLink,
+.iconButton,
+.chip,
+.dayButton {
+  transition: 160ms ease;
+}
+
+.exportLink,
+.eventLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  padding: 0.9rem 1.1rem;
+  color: #1f2937;
+  text-decoration: none;
+  background: #ffffff;
+}
+
+.exportLink:hover,
+.eventLink:hover,
+.iconButton:hover,
+.chip:hover,
+.dayButtonCurrentMonth:hover {
+  transform: translateY(-1px);
+  border-color: rgba(15, 23, 42, 0.2);
+}
+
+.filters {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.filterRow {
+  display: flex;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.chip {
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: #ffffff;
+  color: #334155;
+  padding: 0.8rem 1rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.chipPrimary {
+  background: #13253a;
+  color: #ffffff;
+  border-color: #13253a;
+}
+
+.chipAccent {
+  background: #0f9c95;
+  color: #ffffff;
+  border-color: #0f9c95;
+}
+
+.layout {
+  display: grid;
+  gap: 1.5rem;
+  grid-template-columns: minmax(0, 1.15fr) minmax(280px, 420px);
+}
+
+.calendarCard,
+.selectedDayCard,
+.eventCard,
+.stateBox {
+  border-radius: 1.75rem;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(248, 250, 252, 0.94);
+}
+
+.calendarCard {
+  padding: 1rem;
+}
+
+.monthHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.iconButton {
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: #ffffff;
+  color: #1f2937;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.monthSummary {
+  text-align: center;
+}
+
+.monthLabel {
+  margin: 0.35rem 0 0;
+  font-size: clamp(1.5rem, 3vw, 2.1rem);
+  font-weight: 700;
+  color: #0f172a;
+  text-transform: capitalize;
+}
+
+.weekdays {
+  margin-top: 1.25rem;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 0.45rem;
+  text-align: center;
+  font-size: 0.7rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #6b7280;
+}
+
+.dayGrid {
+  margin-top: 0.75rem;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.dayButton {
+  min-height: 5rem;
+  border-radius: 1.4rem;
+  padding: 0.7rem;
+  text-align: left;
+  border: 1px solid transparent;
+}
+
+.dayButtonCurrentMonth {
+  background: #ffffff;
+  border-color: rgba(15, 23, 42, 0.08);
+}
+
+.dayButtonMuted {
+  background: rgba(226, 232, 240, 0.6);
+  border-color: rgba(15, 23, 42, 0.04);
+}
+
+.dayButtonSelected {
+  background: #dff8f6;
+  border-color: #0f9c95;
+  box-shadow: 0 12px 30px -22px rgba(13, 148, 136, 0.9);
+}
+
+.dayTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.dayNumber {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.dayNumberToday {
+  color: #0f9c95;
+}
+
+.dayCounter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.45rem;
+  height: 1.45rem;
+  padding-inline: 0.45rem;
+  border-radius: 999px;
+  background: #13253a;
+  color: #ffffff;
+  font-size: 0.64rem;
+  font-weight: 700;
+}
+
+.dayDots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.28rem;
+  margin-top: 1rem;
+}
+
+.eventDot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 999px;
+}
+
+.eventDotPlatform {
+  background: #d946ef;
+}
+
+.eventDotOnline {
+  background: #f59e0b;
+}
+
+.eventDotOnsite {
+  background: #0f9c95;
+}
+
+.sideColumn {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.selectedDayCard {
+  padding: 1rem 1.1rem;
+}
+
+.selectedValue {
+  margin: 0.6rem 0 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #334155;
+}
+
+.stateBox {
+  min-height: 8rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1.4rem;
+  color: #475569;
+  text-align: center;
+}
+
+.spinningIcon {
+  animation: spin 1s linear infinite;
+}
+
+.eventCard {
+  padding: 1.2rem;
+}
+
+.eventHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.eventMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.5rem 0.75rem;
+  background: #e5e7eb;
+  color: #334155;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.badgeSource {
+  background: #fae8ff;
+  color: #a21caf;
+}
+
+.badgeOnline {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.badgeOnsite {
+  background: #ccfbf1;
+  color: #0f766e;
+}
+
+.eventTitle {
+  margin: 1rem 0 0;
+  font-size: 1.2rem;
+  line-height: 1.2;
+  color: #0f172a;
+}
+
+.eventFacts {
+  margin-top: 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  color: #475569;
+  font-size: 0.95rem;
+}
+
+.eventFacts p {
+  margin: 0;
+}
+
+.inlineIcon {
+  width: 1rem;
+  height: 1rem;
+}
+
+@media (max-width: 1024px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .panel {
+    padding: 1rem;
+    border-radius: 1.5rem;
+  }
+
+  .dayGrid {
+    gap: 0.35rem;
+  }
+
+  .dayButton {
+    min-height: 4.5rem;
+    border-radius: 1.1rem;
+  }
+
+  .exportLink,
+  .eventLink,
+  .chip {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}
