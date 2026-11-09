@@ -40,15 +40,10 @@ function cleanGuideXmlText(value: string | null | undefined) {
     .trim();
 }
 
-function matchGuideAllTagValues(block: string, tagName: string) {
-  return Array.from(block.matchAll(new RegExp(`<${tagName}>([\\s\\S]*?)</${tagName}>`, "g")))
-    .map((match) => cleanGuideXmlText(match[1]))
-    .filter((value): value is string => Boolean(value));
-}
-
-function matchGuideLastTagValue(block: string, tagName: string) {
-  const matches = matchGuideAllTagValues(block, tagName);
-  return matches.at(-1) ?? null;
+function matchGuideTagValue(block: string, tagName: string, preserveMarkup = false) {
+  // Event fields precede metadata that can contain tags with the same names.
+  const raw = block.match(new RegExp(`<${tagName}>([\\s\\S]*?)</${tagName}>`))?.[1];
+  return preserveMarkup ? raw ? decodeGuideXmlEntities(raw) : null : cleanGuideXmlText(raw);
 }
 
 function matchGuideNestedValue(block: string, containerTag: string, nestedTag: string) {
@@ -62,50 +57,177 @@ function matchGuideNestedValue(block: string, containerTag: string, nestedTag: s
   return cleanGuideXmlText(match?.[1]);
 }
 
+function normalizeGuideUrl(value: string | null) {
+  if (!value) {
+    return null;
+  }
+
+  const bareDomain = /^(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:[/?#]|$)/i;
+
+  try {
+    const url = new URL(bareDomain.test(value) ? `https://${value}` : value);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
 function extractGuideFirstUrl(value: string | null) {
   if (!value) {
     return null;
   }
 
   const match = value.match(/https?:\/\/[^\s<>"')\]]+/i);
-  return match?.[0] ?? null;
+  return normalizeGuideUrl(match?.[0] ?? null);
 }
 
 function normalizeGuideFormat(rawFormat: string | null) {
   return rawFormat?.toUpperCase().includes("ONLINE") ? "ONLINE" : "ONSITE";
 }
 
-function parseGuideEumetsatEventBlock(block: string): GuideExternalTrainingEvent | null {
-  // The EUMETSAT endpoint returns raw XML. Normalize it on the server so the
-  // client always receives a stable and predictable JSON contract.
-  const title = matchGuideLastTagValue(block, "title");
-  const startDate = matchGuideLastTagValue(block, "startDate");
-  const endDate = matchGuideLastTagValue(block, "endDate");
+function guideText(value: unknown): string | null {
+  return typeof value === "string" ? cleanGuideXmlText(value) || null : null;
+}
 
-  if (!title || !startDate || !endDate) {
+function guideValue(value: unknown): string | null {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return guideText((value as Record<string, unknown>).value);
+  }
+
+  return guideText(value);
+}
+
+function guideDate(value: unknown): string | null {
+  if ((typeof value !== "number" && typeof value !== "string") || value === "") {
     return null;
   }
+
+  const date = new Date(typeof value === "string" && /^\d+$/.test(value) ? Number(value) : value);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+}
+
+function mapGuideJsonEvent(value: unknown): GuideExternalTrainingEvent | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const event = value as Record<string, unknown>;
+  const title = guideText(event.title);
+  const startDate = guideDate(event.startDate);
+  const endDate = guideDate(event.endDate);
+
+  if (!title || !startDate || !endDate || endDate < startDate) {
+    return null;
+  }
+
+  const country = event.country && typeof event.country === "object"
+    ? event.country as Record<string, unknown>
+    : null;
+  const city = guideText(event.city);
+  const isOnline = [city, guideText(country?.name), guideText(country?.id), guideText(event.country)]
+    .some((location) => location?.toUpperCase() === "ONLINE");
+  const rawFormat = guideText(event.format);
 
   return {
     id: `${title}-${startDate}`,
     title,
     startDate,
     endDate,
-    rawFormat: matchGuideLastTagValue(block, "format") ?? "UNKNOWN",
+    rawFormat: isOnline ? "ONLINE" : rawFormat ?? "UNKNOWN",
+    eventType: guideValue(event.eventType) ?? "Event",
+    status: guideValue(event.status) ?? "Scheduled",
+    attendance: guideValue(event.attendance),
+    city,
+    host: guideText(event.host),
+    contactUrl: normalizeGuideUrl(guideText(event.contactUrl)),
+    registrationUrl: extractGuideFirstUrl(
+      typeof event.registrationHowto === "string" ? decodeGuideXmlEntities(event.registrationHowto) : null,
+    ),
+    description: guideText(event.description),
+    languages: (Array.isArray(event.language) ? event.language : [event.language])
+      .map(guideValue)
+      .filter((language): language is string => Boolean(language)),
+  };
+}
+
+function parseGuideEumetsatEventBlock(block: string): GuideExternalTrainingEvent | null {
+  const title = matchGuideTagValue(block, "title");
+  const startDate = guideDate(matchGuideTagValue(block, "startDate"));
+  const endDate = guideDate(matchGuideTagValue(block, "endDate"));
+
+  if (!title || !startDate || !endDate || endDate < startDate) {
+    return null;
+  }
+
+  const city = matchGuideTagValue(block, "city");
+  const country = matchGuideNestedValue(block, "country", "name");
+  const isOnline = [city, country].some((location) => location?.toUpperCase() === "ONLINE");
+
+  return {
+    id: `${title}-${startDate}`,
+    title,
+    startDate,
+    endDate,
+    rawFormat: isOnline ? "ONLINE" : matchGuideTagValue(block, "format") ?? "UNKNOWN",
     eventType: matchGuideNestedValue(block, "eventType", "value") ?? "Event",
     status: matchGuideNestedValue(block, "status", "value") ?? "Scheduled",
     attendance: matchGuideNestedValue(block, "attendance", "value"),
-    city: matchGuideLastTagValue(block, "city"),
-    host: matchGuideLastTagValue(block, "host"),
-    contactUrl: matchGuideLastTagValue(block, "contactUrl"),
-    registrationUrl: extractGuideFirstUrl(matchGuideLastTagValue(block, "registrationHowto")),
-    description: matchGuideLastTagValue(block, "description"),
+    city,
+    host: matchGuideTagValue(block, "host"),
+    contactUrl: normalizeGuideUrl(matchGuideTagValue(block, "contactUrl")),
+    registrationUrl: extractGuideFirstUrl(matchGuideTagValue(block, "registrationHowto", true)),
+    description: matchGuideTagValue(block, "description"),
     languages: Array.from(
       block.matchAll(/<language>[\s\S]*?<value>([\s\S]*?)<\/value>[\s\S]*?<\/language>/g),
     )
       .map((match) => cleanGuideXmlText(match[1]))
       .filter((value): value is string => Boolean(value)),
   };
+}
+
+function parseGuideFeed(body: string): GuideExternalTrainingEvent[] {
+  const content = body.trim();
+  let events: (GuideExternalTrainingEvent | null)[];
+
+  if (content.startsWith("[") || content.startsWith("{")) {
+    const payload: unknown = JSON.parse(content);
+
+    if (!Array.isArray(payload)) {
+      throw new Error("Unexpected Guide EUMETSAT JSON feed: expected an array.");
+    }
+
+    events = payload.map(mapGuideJsonEvent);
+  } else {
+    const xml = content.replace(/^<\?xml\b[^?]*\?>\s*/, "");
+    if (/^<events\s*\/>$/.test(xml)) {
+      return [];
+    }
+
+    const body = xml.match(/^<events(?:\s[^>]*)?>([\s\S]*)<\/events>$/)?.[1];
+    const eventPattern = /<event>([\s\S]*?)<\/event>/g;
+    if (body === undefined || body.replace(eventPattern, "").trim()) {
+      throw new Error("Unexpected Guide EUMETSAT feed format.");
+    }
+
+    events = Array.from(body.matchAll(eventPattern))
+      .map((match) => parseGuideEumetsatEventBlock(match[1]));
+  }
+
+  const seen = new Set<string>();
+
+  return events
+    .filter((event): event is GuideExternalTrainingEvent => Boolean(event))
+    .sort((left, right) => new Date(left.startDate).getTime() - new Date(right.startDate).getTime())
+    .filter((event) => {
+      const key = JSON.stringify([event.title, event.startDate]);
+
+      if (seen.has(key)) {
+        return false;
+      }
+
+      seen.add(key);
+      return true;
+    });
 }
 
 function getGuideCalendarCache() {
@@ -128,7 +250,7 @@ async function fetchGuidePublicTrainingEvents() {
   try {
     const response = await fetch(GUIDE_EUMETSAT_EVENTS_ENDPOINT, {
       headers: {
-        Accept: "application/xml,text/xml;q=0.9,*/*;q=0.8",
+        Accept: "application/json,application/xml;q=0.9,text/xml;q=0.8",
       },
       cache: "no-store",
       signal: controller.signal,
@@ -138,18 +260,7 @@ async function fetchGuidePublicTrainingEvents() {
       throw new Error(`Guide EUMETSAT request failed with status ${response.status}.`);
     }
 
-    const xml = await response.text();
-
-    return Array.from(xml.matchAll(/<event>([\s\S]*?)<\/event>/g))
-      .map((match) => parseGuideEumetsatEventBlock(match[1]))
-      .filter((event): event is GuideExternalTrainingEvent => Boolean(event))
-      .sort((left, right) => new Date(left.startDate).getTime() - new Date(right.startDate).getTime())
-      .filter(
-        (event, index, events) =>
-          events.findIndex(
-            (candidate) => candidate.title === event.title && candidate.startDate === event.startDate,
-          ) === index,
-      );
+    return parseGuideFeed(await response.text());
   } finally {
     if (timeoutId) {
       clearTimeout(timeoutId);
@@ -185,7 +296,7 @@ export function getGuideCalendarSnapshot() {
     events: cacheState.events ?? [],
     updatedAt: cacheState.updatedAt ? new Date(cacheState.updatedAt).toISOString() : null,
     isRefreshing: Boolean(cacheState.refreshPromise),
-    hasData: Boolean(cacheState.events?.length),
+    hasData: cacheState.events !== null,
     lastErrorAt: cacheState.lastErrorAt ? new Date(cacheState.lastErrorAt).toISOString() : null,
   };
 }
@@ -194,7 +305,7 @@ export function ensureGuideCalendarRefresh(force = false) {
   const cacheState = getGuideCalendarCache();
   const isStale = !cacheState.updatedAt || Date.now() - cacheState.updatedAt > GUIDE_CALENDAR_CACHE_TTL_MS;
 
-  if (!force && !isStale && cacheState.events?.length) {
+  if (!force && !isStale && cacheState.events !== null) {
     return cacheState.refreshPromise ?? Promise.resolve(cacheState.events);
   }
 
@@ -222,7 +333,7 @@ export async function getGuideCalendarEvents() {
   const snapshot = getGuideCalendarSnapshot();
 
   if (snapshot.hasData) {
-    void ensureGuideCalendarRefresh();
+    void ensureGuideCalendarRefresh().catch(() => undefined);
     return snapshot.events;
   }
 
